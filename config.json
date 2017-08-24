@@ -1,0 +1,73 @@
+{
+  "initial_url": "https://www.website.com",
+  "fields_mapping": null,
+  "custom_links": null,
+  "website_id": 1,
+  "custom_products": null,
+  "config_links": {
+    "links": {
+      "xpaths": [
+        "//ul[@class='nav-bar']/li//ul/li//a"
+      ],
+      "regexps": [
+        "http.*://.*website.com/categories/.*"
+      ]
+    },
+    "products": {
+      "xpaths": [
+        ".//div[@class='clProducts']//li//a"
+      ],
+      "regexps": [
+        "http.*://.*website.com/products/.*"
+      ]
+    }
+  },
+  "config_products": {
+    "variant_settings": {
+      "sel": "//div[@class='clProductItemsTable']//table//tr[.//text()='Item Code']//td[position()<last()]",
+      "rules": "cleanTags noHtml noNewLines strip",
+      "product_code": "./text()"
+    },
+    "product_selectors": {
+      "name": {
+        "sel": "//div[@class='title']//text()",
+        "rules": "noHtml noNewLines strip",
+        "kwargs": ""
+      },
+      "category1": {
+        "sel": "//nav[@class='breadcrumbs']/a[position() < last()][3]/text()",
+        "rules": "noHtml noNewLines strip",
+        "kwargs": ""
+      },
+      "category2": {
+        "sel": "//nav[@class='breadcrumbs']/a[position() < last()][4]/text()",
+        "rules": "noHtml noNewLines strip",
+        "kwargs": ""
+      },
+      "category3": {
+        "sel": "//div[@class='clProductTopCategory']//text()",
+        "rules": "noHtml noNewLines strip",
+        "kwargs": ""
+      },
+      "description": {
+        "sel": "//div[@class='clProductTitle']",
+        "rules": "cleanTags noHtml noNewLines strip",
+        "kwargs": ""
+      },
+      "image_file_name_1": {
+        "sel": "//a[@class='fancybox detail']/@href",
+        "rules": "noHtml noNewLines strip",
+        "kwargs": ""
+      }
+    },
+    "additional_selectors": {
+      "variant_name": {
+        "sel": "../../tr[.//text()='Description']/td[count(current()/preceding-sibling::td)+1]//text()",
+        "index": "0",
+        "rules": "noHtml noNewLines strip"
+      }
+    }
+  },
+  "website_name": "Website Name",
+  "supplier_name": "Supplier Name"
+}
