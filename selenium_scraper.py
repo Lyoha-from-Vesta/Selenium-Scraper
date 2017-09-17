@@ -23,13 +23,16 @@ def prettify_string(string: str) -> str:
 
 
 def prettify_description(html_code: str) -> str:
+    if not html_code:
+        return ''
+
     soup = BeautifulSoup(html_code, "html.parser")
     # Removing all attributes
     for e in soup.find_all(True):
         e.attrs = {}
 
     # Removing unwanted tags
-    invalid_tags = ['strong', 'a']
+    invalid_tags = ['strong', 'a', 'style']
     for tag in invalid_tags:
         for match in soup.findAll(tag):
             match.replaceWithChildren()
@@ -123,7 +126,13 @@ class Scraper(object):
         worksheet.write('F1', 'category_3', bold_format)
         worksheet.write('G1', 'url', bold_format)
         worksheet.write('H1', 'image_url', bold_format)
-        worksheet.write('I1', 'additional', bold_format)
+
+        additional_fields = [s for s in self.config['config_products'].get('additional_selectors', [])]
+        columns = 'IJKLMNOPQRSTUVWXYZ'
+        ind = 0
+        for s in additional_fields:
+            worksheet.write(f'{columns[ind]}1', s, bold_format)
+            ind += 1
 
         # Writing data
         row = 1
@@ -140,7 +149,11 @@ class Scraper(object):
                 worksheet.write(row, 5, product['category_3'])
                 worksheet.write(row, 6, product['url'])
                 worksheet.write(row, 7, image_url)
-                worksheet.write(row, 8, json.dumps(variant['additional']))
+                ind = 8
+                for s in additional_fields:
+                    v = [v for v in variant['additional'] if s in v.keys()]
+                    worksheet.write(row, ind, v[0][s])
+                    ind+= 1
                 row += 1
 
         workbook.close()
@@ -229,7 +242,10 @@ class Scraper(object):
         element_watch_changes_xpath = "//ul[contains(@class,'gridView')]/li[last()]"
 
         link_id = 0
-        list_click_all_these_links = self.browser.find_elements_by_xpath(self.config['click_all_these_links'])
+        if self.config.get('click_all_these_links'):
+            list_click_all_these_links = self.browser.find_elements_by_xpath(self.config['click_all_these_links'])
+        else:
+            list_click_all_these_links = []
         clicks = 0
         while continue_scraping:
             # Extracting links from the page
@@ -326,7 +342,7 @@ class Scraper(object):
             logging.warning(
                 f"Product '{product_name}' has no description! URL: {url_to_scrape['url']}, selector: {self.config['config_products']['product_selectors']['description']['sel']}")
         if is_none_or_empty(product_category1) and is_none_or_empty(product_category2) and is_none_or_empty(
-                product_category3):
+                product_category3) and not (is_none_or_empty(self.config['config_products']['product_selectors']['category1']['sel'])):
             logging.warning(f"Product '{product_name}' has no categories! URL: {url_to_scrape['url']}")
 
         new_product_record_id = self.insert_t_products_work(product_name, product_description, product_category1,
@@ -355,10 +371,10 @@ class Scraper(object):
                 for additional_selector_name in self.config['config_products'].get('additional_selectors', []):
                     additional_selector = self.config['config_products']['additional_selectors'][
                         additional_selector_name]
-                    if additional_selector['index'].lower() == 'variant':
+                    if str(additional_selector['index']).lower() == 'variant':
                         selector_index = variant_index
                     else:
-                        selector_index = 0  # TODO: Implement
+                        selector_index = int(additional_selector['index']) or 0 # TODO: Implement
 
                     variant_additional.append({additional_selector_name: self.get_web_element_attribute(
                         additional_selector['sel'],
@@ -376,13 +392,12 @@ class Scraper(object):
 
                 if new_product_variant_id is not None:
                     variant_image_url = self.get_web_element_attribute(
-                        self.config['config_products']['product_selectors']['image_file_name_1']['sel'],
+                        self.config['config_products']['variant_settings'].get('image', self.config['config_products']['product_selectors']['image_file_name_1']['sel']),
                         variant)
 
                     if is_none_or_empty(variant_image_url):
                         logging.warning(
                             f"Variant of product '{product_name}' has no image! URL: {url_to_scrape['url']}, selector: {self.config['config_products']['variant_settings']['sel']} + {self.config['config_products']['product_selectors']['image_file_name_1']['sel']}")
-                        return
 
                     self.insert_t_product_variant_images_work(variant_image_url, new_product_variant_id)
                     logging.debug(f'\t\tImage: {variant_image_url}')
@@ -421,6 +436,9 @@ class Scraper(object):
                 continue_scraping = False
 
     def get_web_element_attribute(self, selector, parent_web_element=None, element_index=0, no_warning=False):
+        if is_none_or_empty(selector):
+            return None
+
         if not parent_web_element or selector.startswith('//'):
             parent_web_element = self.browser
 
@@ -433,6 +451,10 @@ class Scraper(object):
             element = parent_web_element.find_elements_by_xpath(possible_selector)
             if len(element):
                 result = element[element_index].text
+                ind = 1
+                while is_none_or_empty(result) and ind < len(element):
+                    result = element[ind].text
+                    # TODO: add warning
         elif possible_attribute.startswith('@'):
             element = parent_web_element.find_elements_by_xpath(possible_selector)
             if len(element):
