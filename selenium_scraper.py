@@ -2,14 +2,20 @@ import json
 import logging
 import re
 from datetime import datetime
+from os.path import basename
 from time import sleep
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import htmlmin
+import os
+
+import requests
 import xlsxwriter as xlsxwriter
 from bs4 import BeautifulSoup
-from selenium import webdriver
 from selenium.common.exceptions import WebDriverException
+
+from requests_lxml_browser import RequestsLxmlBrowser
+from selenium_chrome_browser import SeleniumChromeBrowser
 
 
 def is_none_or_empty(string: str) -> bool:
@@ -17,8 +23,11 @@ def is_none_or_empty(string: str) -> bool:
 
 
 def prettify_string(string: str) -> str:
+    if is_none_or_empty(string):
+        return string
+
     rez = string.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>')
-    rez = rez.replace('™', '')
+    rez = rez.replace('™', '').replace('®', '').replace('—', '-')
     return rez
 
 
@@ -31,11 +40,22 @@ def prettify_description(html_code: str) -> str:
     for e in soup.find_all(True):
         e.attrs = {}
 
-    # Removing unwanted tags
+    # Removing unwanted tags but saving their content
     invalid_tags = ['strong', 'a', 'style']
     for tag in invalid_tags:
         for match in soup.findAll(tag):
             match.replaceWithChildren()
+
+    # Removing unwanted tags with their content
+    invalid_tags = ['script', 'img']
+    for tag in invalid_tags:
+        for match in soup.findAll(tag):
+            match.replaceWith('')
+
+    # Removing empty tags
+    for tag in soup.find_all():
+        if len(tag.text) == 0:
+            tag.extract()
 
     rez = soup.prettify()
     rez = prettify_string(htmlmin.minify(rez, remove_comments=True, remove_empty_space=True))
@@ -62,37 +82,40 @@ class Scraper(object):
     t_product_variant_images_work = dict()
     t_product_variant_images_work_pk = set()
 
-    def __init__(self, config: dict, headless=False, disable_images=False, width=1920, height=1024, implicitly_wait=1):
+    def __init__(self, config: dict):
+
         self.config = config
         self.config['config_links']['links']['xpaths'] = [xpath.replace('/@href', '') for xpath in
                                                           self.config['config_links']['links']['xpaths']]
         self.config['config_links']['products']['xpaths'] = [xpath.replace('/@href', '') for xpath in
                                                              self.config['config_links']['products']['xpaths']]
-        self.init_chrome_driver(headless, disable_images, width, height, implicitly_wait)
 
-    def __del__(self):
-        self.browser.close()
+        self.download_product_images = self.config.get('scraper', {}).get('download_product_images', True)
+        if self.download_product_images:
+            images_folder_name = self.config.get('website_name') or "Images"
+            i = 1
+            while os.path.exists(images_folder_name):
+                images_folder_name = f"{self.config.get('website_name') or 'Images'}_{i}"
+                i += 1
+            os.mkdir(images_folder_name)
+            self.product_images_folder = images_folder_name
 
-    def init_chrome_driver(self, headless: bool, disable_images: bool, width: int, height: int, implicitly_wait: int):
-        # Configuring Chrome
-        chrome_options = webdriver.ChromeOptions()
-        if headless:
-            # Headless mode works only for Chrome 60+ (on Windows)
-            chrome_options.add_argument('headless')
-            chrome_options.add_argument(f'window-size={width}x{height}')
-
-        if disable_images:
-            chrome_options.add_experimental_option("prefs", {"profile.managed_default_content_settings.images": 2})
-
-        self.browser = webdriver.Chrome(chrome_options=chrome_options)
-        self.browser.implicitly_wait(implicitly_wait)
-
-        # TODO: Stopped working. selenium.common.exceptions.WebDriverException: Message: disconnected: unable to connect to renderer
-        # if headless is False:
-        #     sleep(1)
-        #     self.browser.set_window_size(width, height)
-
-        logging.debug('ChromeDriver has been initialized')
+        browser = self.config.get('scraper', {}).get('browser', 'lxml').lower()
+        if browser == 'chrome':
+            logging.info('Using Selenium WebDriver with Chrome browser')
+            self.browser = SeleniumChromeBrowser(
+                headless=self.config.get('scraper', {}).get('headless', False),
+                disable_images=self.config.get('scraper', {}).get('disable_images',
+                                                                  False),
+                width=self.config.get('scraper', {}).get('width', 1920),
+                height=self.config.get('scraper', {}).get('height', 1080),
+                implicitly_wait=self.config.get('scraper', {}).get('headless', 1),
+            )
+        else:
+            logging.info('Using Selenium WebDriver with Chrome browser')
+            self.browser = RequestsLxmlBrowser(
+                no_session=self.config.get('scraper', {}).get('download_product_images', True)
+            )
 
     def scrape(self, get_interval=1.00):
         self.put_initial_url(self.UrlTypes.CATALOGUE)
@@ -153,7 +176,7 @@ class Scraper(object):
                 for s in additional_fields:
                     v = [v for v in variant['additional'] if s in v.keys()]
                     worksheet.write(row, ind, v[0][s])
-                    ind+= 1
+                    ind += 1
                 row += 1
 
         workbook.close()
@@ -181,7 +204,8 @@ class Scraper(object):
                                             'retrieved': None,
                                             'record_id': record_id}
         else:
-            logging.debug(f"Doubled link: {url}")
+            # logging.debug(f"Doubled link: {url}")
+            pass
 
     def insert_t_products_work(self, name: str, description: str or None, category_1: str or None,
                                category_2: str or None, category_3: str or None, url: str) -> int or None:
@@ -237,84 +261,43 @@ class Scraper(object):
     def extract_links(self, url_to_scrape):
         self.browser.get(url_to_scrape['url'])
 
-        continue_scraping = True
-        button_load_more_xpath = "//a[@class='right'][i[(contains(@class, 'fa-chevron-right')) and not(contains(@class, 'disabled'))]]"
-        element_watch_changes_xpath = "//ul[contains(@class,'gridView')]/li[last()]"
+        # Extracting links from the page
+        extracted_links = set()
+        catalogue_url_regex_filters = list()
+        for cre in self.config['config_links']['links']['regexps']:  # TODO: rename links to catalogues in config?
+            try:
+                catalogue_url_regex_filters.append(re.compile(cre))
+            except:
+                logging.error(f'Invalid catalogue regex: {cre}')
 
-        link_id = 0
-        if self.config.get('click_all_these_links'):
-            list_click_all_these_links = self.browser.find_elements_by_xpath(self.config['click_all_these_links'])
-        else:
-            list_click_all_these_links = []
-        clicks = 0
-        while continue_scraping:
-            # Extracting links from the page
-            extracted_links = set()
-            catalogue_url_regex_filters = list()
-            for cre in self.config['config_links']['links']['regexps']:  # TODO: rename links to catalogues in config?
-                try:
-                    catalogue_url_regex_filters.append(re.compile(cre))
-                except:
-                    logging.error(f'Invalid catalogue regex: {cre}')
+        product_url_regex_filters = list()
+        for pre in self.config['config_links']['products']['regexps']:
+            try:
+                product_url_regex_filters.append(re.compile(pre))
+            except:
+                logging.error(f'Invalid product regex: {pre}')
 
-            product_url_regex_filters = list()
-            for pre in self.config['config_links']['products']['regexps']:
-                try:
-                    product_url_regex_filters.append(re.compile(pre))
-                except:
-                    logging.error(f'Invalid product regex: {pre}')
+        for catalogue_xpath in self.config['config_links']['links']['xpaths']:
+            for a_element in self.browser.find_elements_by_xpath(catalogue_xpath):
+                catalogue_url = urljoin(url_to_scrape['url'], self.browser.get_element_attribute(a_element, 'href'))
+                if len(catalogue_url_regex_filters) and not (
+                        any(regex.match(catalogue_url) for regex in catalogue_url_regex_filters)):
+                    continue
+                extracted_links.add((catalogue_url, self.UrlTypes.CATALOGUE))
 
-            for catalogue_xpath in self.config['config_links']['links']['xpaths']:
-                for a_element in self.browser.find_elements_by_xpath(catalogue_xpath):
-                    catalogue_url = urljoin(url_to_scrape['url'], a_element.get_attribute('href'))
-                    if len(catalogue_url_regex_filters) and not (
-                            any(regex.match(catalogue_url) for regex in catalogue_url_regex_filters)):
-                        continue
-                    extracted_links.add((catalogue_url, self.UrlTypes.CATALOGUE))
+        for product_xpath in self.config['config_links']['products']['xpaths']:
+            for a_element in self.browser.find_elements_by_xpath(product_xpath):
+                product_url = urljoin(url_to_scrape['url'],
+                                      self.browser.get_element_attribute(a_element, 'href'))
 
-            for product_xpath in self.config['config_links']['products']['xpaths']:
-                for a_element in self.browser.find_elements_by_xpath(product_xpath):
-                    product_url = urljoin(url_to_scrape['url'], a_element.get_attribute('href'))
-                    if len(product_url_regex_filters) and not (
-                            any(regex.match(product_url) for regex in product_url_regex_filters)):
-                        continue
-                    extracted_links.add((product_url, self.UrlTypes.PRODUCT))
+                if len(product_url_regex_filters) and not (
+                        any(regex.match(product_url) for regex in product_url_regex_filters)):
+                    continue
+                extracted_links.add((product_url, self.UrlTypes.PRODUCT))
 
-            # logging.debug(f'Adding new links to DB: {extracted_links}')
-            for (url, link_type) in extracted_links:
-                self.insert_t_links_work(url, link_type)
-
-            # TODO: Here we need to click a button while it exists. Should create a corresponding option in config.
-            button_load_more = []  # self.browser.find_elements_by_xpath(button_load_more_xpath)
-            if len(button_load_more):
-                scroll_element_script = "var viewPortHeight = Math.max(document.documentElement.clientHeight, window.innerHeight || 0);" \
-                                        "var elementTop = arguments[0].getBoundingClientRect().top;" \
-                                        "window.scrollBy(0, elementTop-(viewPortHeight/2));"
-                self.browser.execute_script(scroll_element_script, button_load_more[0])
-
-                button_load_more[0].click()
-                clicks += 1
-                if clicks > 100:
-                    logging.warning(
-                        f"Too many clicks on page {url_to_scrape['url']}, selector: {button_load_more_xpath}")
-                    continue_scraping = False
-            elif len(list_click_all_these_links) and link_id < len(list_click_all_these_links):
-                list_click_all_these_links = self.browser.find_elements_by_xpath(self.config['click_all_these_links'])
-                link_to_click = list_click_all_these_links[link_id]
-                link_id += 1
-                scroll_element_script = "var viewPortHeight = Math.max(document.documentElement.clientHeight, window.innerHeight || 0);" \
-                                        "var elementTop = arguments[0].getBoundingClientRect().top;" \
-                                        "window.scrollBy(0, elementTop-(viewPortHeight/2));"
-                self.browser.execute_script(scroll_element_script, link_to_click)
-
-                link_to_click.click()
-                clicks += 1
-                if clicks > 100:
-                    logging.warning(
-                        f"Too many clicks on page {url_to_scrape['url']}, selector: {self.config['click_all_these_links']}")
-                    continue_scraping = False
-            else:
-                continue_scraping = False
+        # logging.debug(f'Adding new links to DB: {extracted_links}')
+        for (url, link_type) in extracted_links:
+            self.insert_t_links_work(url, link_type)
 
     def extract_product_data(self, url_to_scrape):
         self.browser.get(url_to_scrape['url'])
@@ -342,7 +325,8 @@ class Scraper(object):
             logging.warning(
                 f"Product '{product_name}' has no description! URL: {url_to_scrape['url']}, selector: {self.config['config_products']['product_selectors']['description']['sel']}")
         if is_none_or_empty(product_category1) and is_none_or_empty(product_category2) and is_none_or_empty(
-                product_category3) and not (is_none_or_empty(self.config['config_products']['product_selectors']['category1']['sel'])):
+                product_category3) and not (
+                is_none_or_empty(self.config['config_products']['product_selectors']['category1']['sel'])):
             logging.warning(f"Product '{product_name}' has no categories! URL: {url_to_scrape['url']}")
 
         new_product_record_id = self.insert_t_products_work(product_name, product_description, product_category1,
@@ -350,123 +334,105 @@ class Scraper(object):
         logging.debug(f'Extracted product: {product_name}')
 
         # Getting a list of variants for the product
-        continue_scraping = bool(new_product_record_id is not None)
-        clicks = 0
-        while continue_scraping:
-            product_variants = self.browser.find_elements_by_xpath(
-                self.config['config_products']['variant_settings']['sel'])
+        product_variants = self.browser.find_elements_by_xpath(
+            self.config['config_products']['variant_settings']['sel'])
 
-            if not len(product_variants):
+        if not len(product_variants):
+            logging.warning(
+                f"Product '{product_name}' has no variants! URL: {url_to_scrape['url']}, selector: {self.config['config_products']['variant_settings']['sel']}")
+            return
+
+        variant_index = 0
+        for variant in product_variants:
+            variant_sku = self.get_web_element_attribute(
+                self.config['config_products']['variant_settings']['product_code'],
+                variant)
+
+            variant_additional = list()
+            for additional_selector_name in self.config['config_products'].get('additional_selectors', []):
+                additional_selector = self.config['config_products']['additional_selectors'][
+                    additional_selector_name]
+                if str(additional_selector['index']).lower() == 'variant':
+                    selector_index = variant_index
+                else:
+                    selector_index = int(additional_selector['index']) or 0  # TODO: Implement
+
+                variant_additional.append({additional_selector_name: self.get_web_element_attribute(
+                    additional_selector['sel'],
+                    variant,
+                    selector_index,
+                    no_warning=True)})
+
+            if is_none_or_empty(variant_sku):
                 logging.warning(
-                    f"Product '{product_name}' has no wariants! URL: {url_to_scrape['url']}, selector: {self.config['config_products']['variant_settings']['sel']}")
-                return
+                    f"Variant of product '{product_name}' has no SKU! URL: {url_to_scrape['url']}, selector: {self.config['config_products']['variant_settings']['sel']} + {self.config['config_products']['variant_settings']['product_code']}")
+                continue
 
-            variant_index = 0
-            for variant in product_variants:
-                variant_sku = self.get_web_element_attribute(
-                    self.config['config_products']['variant_settings']['product_code'],
+            new_product_variant_id = self.insert_t_product_variants_work(variant_sku, variant_additional,
+                                                                         new_product_record_id)
+            logging.debug(f'\tVariant: {variant_sku}')
+
+            if new_product_variant_id is not None:
+                variant_image_url = self.get_web_element_attribute(
+                    self.config['config_products']['variant_settings'].get('image', self.config['config_products'][
+                        'product_selectors']['image_file_name_1']['sel']),
                     variant)
 
-                variant_additional = list()
-                for additional_selector_name in self.config['config_products'].get('additional_selectors', []):
-                    additional_selector = self.config['config_products']['additional_selectors'][
-                        additional_selector_name]
-                    if str(additional_selector['index']).lower() == 'variant':
-                        selector_index = variant_index
-                    else:
-                        selector_index = int(additional_selector['index']) or 0 # TODO: Implement
-
-                    variant_additional.append({additional_selector_name: self.get_web_element_attribute(
-                        additional_selector['sel'],
-                        variant,
-                        selector_index)})
-
-                if is_none_or_empty(variant_sku):
+                if is_none_or_empty(variant_image_url):
                     logging.warning(
-                        f"Variant of product '{product_name}' has no SKU! URL: {url_to_scrape['url']}, selector: {self.config['config_products']['variant_settings']['sel']} + {self.config['config_products']['variant_settings']['product_code']}")
-                    continue
+                        f"Variant of product '{product_name}' has no image! URL: {url_to_scrape['url']}, selector: {self.config['config_products']['variant_settings']['sel']} + {self.config['config_products']['product_selectors']['image_file_name_1']['sel']}")
+                elif self.download_product_images:
+                    variant_image_url = self.download_product_image(variant_image_url)
 
-                new_product_variant_id = self.insert_t_product_variants_work(variant_sku, variant_additional,
-                                                                             new_product_record_id)
-                logging.debug(f'\tVariant: {variant_sku}')
+                self.insert_t_product_variant_images_work(variant_image_url, new_product_variant_id)
+                logging.debug(f'\t\tImage: {variant_image_url}')
 
-                if new_product_variant_id is not None:
-                    variant_image_url = self.get_web_element_attribute(
-                        self.config['config_products']['variant_settings'].get('image', self.config['config_products']['product_selectors']['image_file_name_1']['sel']),
-                        variant)
-
-                    if is_none_or_empty(variant_image_url):
-                        logging.warning(
-                            f"Variant of product '{product_name}' has no image! URL: {url_to_scrape['url']}, selector: {self.config['config_products']['variant_settings']['sel']} + {self.config['config_products']['product_selectors']['image_file_name_1']['sel']}")
-
-                    self.insert_t_product_variant_images_work(variant_image_url, new_product_variant_id)
-                    logging.debug(f'\t\tImage: {variant_image_url}')
-
-                variant_index += 1
-
-            # TODO: Here we need to click a link while it exists. Should create a corresponding option in config.
-            load_more_xpath = "//a[contains(@class,'navigation') and not(contains(@class,'disabled'))][.//i[contains(@class, 'a-chevron-right')]]"
-            link_load_more = self.browser.find_elements_by_xpath(load_more_xpath)
-            if len(link_load_more):
-                try:
-                    scroll_element_script = "var viewPortHeight = Math.max(document.documentElement.clientHeight, window.innerHeight || 0);" \
-                                            "var elementTop = arguments[0].getBoundingClientRect().top;" \
-                                            "window.scrollBy(0, elementTop-(viewPortHeight/2));"
-                    self.browser.execute_script(scroll_element_script, link_load_more[0])
-                    link_load_more[0].click()
-                    timeout = 100
-                    time_passed = 0
-                    page_content = self.browser.find_element_by_xpath(
-                        "//div[@class='glProductItemsTable']").get_attribute('innerHTML')
-                    while page_content == self.browser.find_element_by_xpath(
-                            "//div[@class='glProductItemsTable']").get_attribute('innerHTML'):
-                        if time_passed > timeout:
-                            logging.warning(f"Page updating timout")
-                            break
-                        sleep(0.1)
-                        time_passed += 1
-                except WebDriverException as wd_ex:
-                    logging.error(
-                        f'Selenium failed to click element {load_more_xpath} on page {url_to_scrape["url"]}. Error message: {wd_ex}')
-                clicks += 1
-                if clicks > 100:
-                    logging.warning(f"Too many clicks on page {url_to_scrape['url']}, selector: {load_more_xpath}")
-                    continue_scraping = False
-            else:
-                continue_scraping = False
+            variant_index += 1
 
     def get_web_element_attribute(self, selector, parent_web_element=None, element_index=0, no_warning=False):
         if is_none_or_empty(selector):
             return None
 
-        if not parent_web_element or selector.startswith('//'):
-            parent_web_element = self.browser
-
         result = None
 
-        possible_attribute = selector.split('/')[-1]
-        possible_selector = selector.replace(possible_attribute, '').rstrip('/')
-        possible_attribute = possible_attribute.lower()
-        if possible_attribute == 'text()':
-            element = parent_web_element.find_elements_by_xpath(possible_selector)
-            if len(element):
-                result = element[element_index].text
-                ind = 1
-                while is_none_or_empty(result) and ind < len(element):
-                    result = element[ind].text
-                    # TODO: add warning
-        elif possible_attribute.startswith('@'):
-            element = parent_web_element.find_elements_by_xpath(possible_selector)
-            if len(element):
-                result = element[element_index].get_attribute(possible_attribute.lstrip('@'))
-        else:
-            element = parent_web_element.find_elements_by_xpath(selector)
-            if len(element):
-                result = element[element_index].get_attribute('innerHTML')
+        selectors = selector.split("|")
+        for selector in selectors:
+            if selector == selectors[0] and selector.startswith('('):
+                selector = selector[1:]
+            if selector == selectors[-1] and not selector.endswith('()') and selector.endswith(')'):
+                selector = selector[:-1]
+
+            selector = selector.replace("\'", '"')
+
+            if not parent_web_element or selector.startswith('//'):
+                parent_web_element = self.browser.get_current_page_as_element()
+
+            possible_attribute = selector.split('/')[-1]
+            possible_selector = selector.replace(possible_attribute, '').rstrip('/')
+            possible_attribute = possible_attribute.lower()
+            if possible_attribute == 'text()':
+                element = self.browser.find_elements_by_xpath(possible_selector, parent_web_element)
+                if len(element):
+                    result = element[element_index].text
+                    ind = 1
+                    while is_none_or_empty(result) and ind < len(element):
+                        result = element[ind].text
+                        # TODO: add warning
+            elif possible_attribute.startswith('@'):
+                element = self.browser.find_elements_by_xpath(possible_selector, parent_web_element)
+                if len(element):
+                    result = self.browser.get_element_attribute(element[element_index], possible_attribute.lstrip('@'))
+            else:
+                element = self.browser.find_elements_by_xpath(selector, parent_web_element)
+                if len(element):
+                    result = self.browser.get_element_attribute(element[element_index], 'innerHTML')
+
+            if result is not None:
+                break
 
         if result is None:
             if not no_warning:
-                logging.warning(f'Selector hit nothing!: {selector}, URL: {self.browser.current_url}')
+                logging.warning(f'Selector hit nothing!: {selector}, URL: {self.browser.get_current_url()}')
             return result
 
         return result.strip()
@@ -484,6 +450,31 @@ class Scraper(object):
                 variants.append(self.t_product_variants_work[vk])
         return variants
 
+    def download_product_image(self, image_url):
+        filename = basename(image_url)
+        path_to_check = os.path.join(self.product_images_folder, filename)
+        target_filename = path_to_check
+        i = 1
+        while os.path.exists(target_filename):
+            target_filename = f'{path_to_check.rsplit(".", 1)[0]}_{i}.{path_to_check.rsplit(".", 1)[1]}'
+            i += 1
+
+        try:
+            r = requests.get(image_url, stream=True)
+            if r.status_code != 200:
+                logging.error(f"Error {r.status_code} downloading image {image_url}")
+                return image_url
+
+            with open(target_filename, 'wb') as f:
+                for chunk in r.iter_content(1024):
+                    f.write(chunk)
+
+        except Exception as ex:
+            logging.error(f"Error {ex} downloading image {image_url}")
+            return image_url
+
+        return basename(target_filename)
+
 
 if __name__ == "__main__":
     with open('config.json') as scraping_config_file:
@@ -494,7 +485,6 @@ if __name__ == "__main__":
                         level=logging.DEBUG)
     logging.getLogger("selenium").setLevel(logging.INFO)
 
-    # scraper = Scraper(config_json, headless=True, disable_images=True)
-    scraper = Scraper(config_json, headless=False, disable_images=True)
+    scraper = Scraper(config_json)
     scraper.scrape(get_interval=0.05)
     scraper.save_results_to_xslx('results.xlsx')

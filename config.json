@@ -1,73 +1,97 @@
 {
-  "initial_url": "https://www.website.com",
-  "fields_mapping": null,
-  "custom_links": null,
-  "website_id": 1,
-  "custom_products": null,
+  "scraper": {
+    "browser": "chrome",
+    "headless": false,
+    "disable_images": true,
+    "width": 1920,
+    "height": 1024,
+    "implicitly_wait": 1.5,
+    "download_product_images": false
+  },
+  "initial_url": "http://www.bosch-pt.com.au/au/en/professional/",
   "config_links": {
     "links": {
       "xpaths": [
-        "//ul[@class='nav-bar']/li//ul/li//a"
+        "//*[@id='Products']//li/a[contains(.,'Find out more')]/@href",
+        "//*[@id='mainContent']//div[contains(@class,'floatBox')]/div/a/@href",
+        "//div[@id='content']//a[contains(.,'more')]/@href",
+        "//div[@id='mainContent']/div[@class='asListing']/div[@class='asRow']/div[@class='asRowL']//a/@href"
       ],
       "regexps": [
-        "http.*://.*website.com/categories/.*"
+        "http://www.bosch-pt.com.au/au/en/.*"
       ]
     },
     "products": {
       "xpaths": [
-        ".//div[@class='clProducts']//li//a"
+        "//div[@id='mainContent']//a[contains(@title,'View product')]/@href"
       ],
       "regexps": [
-        "http.*://.*website.com/products/.*"
+        "http://www.bosch-pt.com.au/au/en/.*"
       ]
     }
   },
   "config_products": {
-    "variant_settings": {
-      "sel": "//div[@class='clProductItemsTable']//table//tr[.//text()='Item Code']//td[position()<last()]",
-      "rules": "cleanTags noHtml noNewLines strip",
-      "product_code": "./text()"
-    },
     "product_selectors": {
       "name": {
-        "sel": "//div[@class='title']//text()",
-        "rules": "noHtml noNewLines strip",
-        "kwargs": ""
-      },
-      "category1": {
-        "sel": "//nav[@class='breadcrumbs']/a[position() < last()][3]/text()",
-        "rules": "noHtml noNewLines strip",
-        "kwargs": ""
-      },
-      "category2": {
-        "sel": "//nav[@class='breadcrumbs']/a[position() < last()][4]/text()",
-        "rules": "noHtml noNewLines strip",
-        "kwargs": ""
-      },
-      "category3": {
-        "sel": "//div[@class='clProductTopCategory']//text()",
-        "rules": "noHtml noNewLines strip",
+        "sel": "(//*[@id='bedetail']//div[@class='detail-headlines']/h1/text()|//div[@id='mainContent']/h1/text())",
+        "rules": "noNewLines strip",
         "kwargs": ""
       },
       "description": {
-        "sel": "//div[@class='clProductTitle']",
-        "rules": "cleanTags noHtml noNewLines strip",
+        "sel": "(//*[@id='bedetail']/div/div/div/section/div[contains(@class,'clearfix') and not(contains(.,'Find dealers')) and not(contains(.,'Next product'))]|.//div[contains(@class, 'detail')]/div[@class='asRight'])",
+        "rules": "cleanTags noNewLines strip",
         "kwargs": ""
       },
       "image_file_name_1": {
-        "sel": "//a[@class='fancybox detail']/@href",
-        "rules": "noHtml noNewLines strip",
+        "sel": "(//div[@id='bedetail']//div[contains(@class,'prodImgStage')]/img/@src|//*[@id='mainContent']//div[contains(@class,'detContainer')]/div[@class='accProdImg']/a/@href|//img[@alt='First slide']/@src)",
+        "rules": "noNewLines strip",
+        "kwargs": ""
+      },
+      "category1": {
+        "sel": "//*[@id='breadcrumb']/ul/li[position() < last()][1]/a/text()",
+        "rules": "noNewLines strip",
+        "kwargs": ""
+      },
+      "category2": {
+        "sel": "//*[@id='breadcrumb']/ul/li[position() < last()][2]/a/text()",
+        "rules": "noNewLines strip",
+        "kwargs": ""
+      },
+      "category3": {
+        "sel": "//*[@id='breadcrumb']/ul/li[position() < last()][3]/a/text()",
+        "rules": "noNewLines strip",
         "kwargs": ""
       }
     },
-    "additional_selectors": {
-      "variant_name": {
-        "sel": "../../tr[.//text()='Description']/td[count(current()/preceding-sibling::td)+1]//text()",
-        "index": "0",
+    "variant_settings": {
+      "sel": "(//div[@id='be-content-stage']|//div[@id='mainContent'])",
+      "rules": "noNewLines strip",
+      "kwargs": "",
+      "product_code": "(//tr[./td[contains(.,'Part number')]]/td[2]//text()|.//*[@id='skuTable']//tr[contains(.,'Part number')]/th[last()]/text())"
+    },
+    "-additional_selectors": {
+      "var_attr_1": {
+        "sel": ".//td[2]",
+        "index": 0,
+        "rules": "noHtml noNewLines strip"
+      },
+      "var_attr_2": {
+        "sel": ".//td[3]",
+        "index": 0,
+        "rules": "noHtml noNewLines strip"
+      },
+      "var_attr_3": {
+        "sel": ".//td[4]",
+        "index": 0,
+        "rules": "noHtml noNewLines strip"
+      },
+      "var_attr_5": {
+        "sel": ".//td[5]",
+        "index": 0,
         "rules": "noHtml noNewLines strip"
       }
     }
   },
-  "website_name": "Website Name",
-  "supplier_name": "Supplier Name"
+  "website_name": "Bosch Power Tools",
+  "supplier_name": "Bosch Australia"
 }
